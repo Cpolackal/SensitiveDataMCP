@@ -1,0 +1,6 @@
+# Copy to config.yaml and adjust.
+upstream:
+  command: uv
+  args: [run, python, fake_ehr/server.py]
+log:
+  db: audit.sqlite

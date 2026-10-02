@@ -1,0 +1,33 @@
+[project]
+name = "mcp-proxy"
+version = "0.1.0"
+description = "MCP proxy that audits, redacts, and caches tool calls"
+authors = [
+    { name = "Chris Polackal", email = "40800643+Cpolackal@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "faker>=40.40.0",
+    "mcp>=2.3.0",
+    "pyyaml>=6.0.3",
+    "redis>=8.1.0",
+]
+
+[project.scripts]
+mcp-proxy = "mcp_proxy.server:main"
+mcp-audit = "mcp_proxy.audit_cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.22,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
