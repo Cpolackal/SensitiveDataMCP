@@ -46,3 +46,18 @@ def test_bad_config_exits_cleanly_without_touching_stdout(tmp_path):
     assert proc.returncode == 2
     assert proc.stdout == ""  # stdout is the protocol channel
     assert "not found" in proc.stderr
+
+
+async def test_calls_over_stdio_are_written_to_the_audit_db(tmp_path):
+    from mcp_proxy.audit import AuditLog
+
+    cfg = _write_config(tmp_path)
+    async with Client(_proxy_params(cfg)) as client:
+        await client.call_tool("get_visa_history", {"traveler_id": "T1000"})
+
+    # log.db defaults to audit.sqlite next to the config file
+    audit = AuditLog(tmp_path / "audit.sqlite")
+    (row,) = audit.query_calls()
+    assert row["tool"] == "get_visa_history"
+    assert audit.list_sessions()[0]["upstream"] == "fake-passport"
+    audit.close()
