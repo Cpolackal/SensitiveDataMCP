@@ -10,7 +10,7 @@ A privacy-focused MCP proxy. It sits between Claude Code and any MCP server, log
 uv sync
 cp config.example.yaml config.yaml
 uv run pytest
-claude mcp add sensitive-proxy -- uv run --directory "$PWD" mcp-proxy --config config.yaml
+claude mcp add sensitive-proxy -e PYTHONPATH="$PWD/src" -- "$PWD/.venv/bin/mcp-proxy" --config "$PWD/config.yaml"
 # once implemented: uv run mcp-audit calls --full
 ```
 

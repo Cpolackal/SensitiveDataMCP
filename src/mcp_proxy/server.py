@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import argparse
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio
 import mcp_types as types
 from mcp import Client
 from mcp.server import Server, ServerRequestContext
+from mcp.server.stdio import stdio_server
 
 from mcp_proxy.audit import AuditLog
+from mcp_proxy.config import ConfigError, load_config
 
 
 def build_proxy(
@@ -52,9 +57,25 @@ def build_proxy(
     )
 
 
+async def _serve(config_path: str) -> None:
+    cfg = load_config(config_path)
+    # TODO: pass an AuditLog(cfg.audit_db) once audit.py exists.
+    server = build_proxy(cfg.upstream)
+    # stdout is the protocol channel in stdio mode: never print to it.
+    async with stdio_server() as (read, write):
+        await server.run(read, write, server.create_initialization_options())
+
+
 def main() -> None:
     """Entry point for `mcp-proxy --config config.yaml` (stdio server)."""
-    raise NotImplementedError
+    parser = argparse.ArgumentParser(prog="mcp-proxy", description=__doc__)
+    parser.add_argument("--config", default="config.yaml", help="path to the YAML config")
+    args = parser.parse_args()
+    try:
+        anyio.run(_serve, args.config)
+    except ConfigError as exc:
+        print(f"mcp-proxy: {exc}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":
