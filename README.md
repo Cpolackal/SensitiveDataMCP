@@ -14,4 +14,4 @@ claude mcp add sensitive-proxy -- uv run --directory "$PWD" mcp-proxy --config c
 # once implemented: uv run mcp-audit calls --full
 ```
 
-`fake_ehr/` is a test MCP server that returns **synthetic** patient records (Faker). No real data is used.
+`fake_passport/` is a test MCP server that returns **synthetic** passport records (Faker). No real data is used.
