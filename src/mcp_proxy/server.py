@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -18,6 +18,8 @@ from mcp.server.stdio import stdio_server
 
 from mcp_proxy.audit import AuditLog, sha256_hex
 from mcp_proxy.config import ConfigError, load_config
+from mcp_proxy.redact import Redactor
+from mcp_proxy.results import redact_call_result
 
 
 @dataclass
@@ -27,10 +29,25 @@ class ProxyState:
     upstream: Client
     audit: AuditLog | None
     session_id: str | None
+    redactor: Redactor | None  # one per connection: its state is the session's state
+
+
+BLOCKED_TEXT = "Blocked by the sensitive-data proxy: this result could not be redacted safely."
+
+
+def _blocked_result() -> types.CallToolResult:
+    """What the model sees when redaction fails. Deliberately says nothing about the data."""
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text=BLOCKED_TEXT)], is_error=True
+    )
 
 
 def build_proxy(
-    upstream_target: Any, audit: AuditLog | None = None, *, name: str = "mcp-proxy"
+    upstream_target: Any,
+    audit: AuditLog | None = None,
+    *,
+    redactor_factory: Callable[[], Redactor | None] | None = None,
+    name: str = "mcp-proxy",
 ) -> Server[ProxyState]:
     """Build the proxy Server.
 
@@ -42,7 +59,9 @@ def build_proxy(
       on_list_tools -> forward to upstream.list_tools
       on_call_tool  -> [cache lookup] -> upstream.call_tool -> [redact] -> audit -> return
     The upstream client is opened in a lifespan so it lives for the whole session.
-    If `audit` is None, calls are forwarded without being logged.
+    If `audit` is None, calls are forwarded without being logged. `redactor_factory` is
+    called once per connection (never share an instance: placeholders and known values are
+    per session); with None, results are passed through UNREDACTED.
     """
 
     @asynccontextmanager
@@ -54,7 +73,8 @@ def build_proxy(
             if audit is not None:
                 info = upstream.server_info
                 session_id = audit.start_session(info.name if info else "unknown")
-            yield ProxyState(upstream, audit, session_id)
+            redactor = redactor_factory() if redactor_factory else None
+            yield ProxyState(upstream, audit, session_id, redactor)
 
     async def on_list_tools(
         ctx: ServerRequestContext[ProxyState], params: types.PaginatedRequestParams | None
@@ -68,36 +88,64 @@ def build_proxy(
         ctx: ServerRequestContext[ProxyState], params: types.CallToolRequestParams
     ) -> types.CallToolResult:
         state = ctx.lifespan_context
-        # Hook point: cache lookup goes here, before the upstream call.
         start = time.perf_counter()
-        try:
-            result = await state.upstream.call_tool(params.name, params.arguments)
-        except Exception as exc:
-            if state.audit is not None:
-                state.audit.record_call(
-                    state.session_id,
-                    params.name,
-                    params.arguments,
-                    is_error=True,
-                    latency_ms=(time.perf_counter() - start) * 1000,
-                    # Type only: exception messages can embed sensitive values.
-                    error=type(exc).__name__,
-                )
-            raise
-        if state.audit is not None:
-            raw = result.model_dump_json(by_alias=True, exclude_none=True)
-            # TODO(redaction): `result` goes through the redactor here, before logging or
-            # returning. Until then result_redacted is the RAW result: don't use real data.
+
+        def log(tool_args, *, result_redacted=None, raw=None, count=0, is_error=False, error=None):
+            if state.audit is None:
+                return
             state.audit.record_call(
                 state.session_id,
                 params.name,
-                params.arguments,
-                result_redacted=raw,
-                result_sha256=sha256_hex(raw),
-                is_error=bool(result.is_error),
+                tool_args,
+                result_redacted=result_redacted,
+                result_sha256=sha256_hex(raw) if raw is not None else None,
+                redactions_count=count,
+                is_error=is_error,
                 latency_ms=(time.perf_counter() - start) * 1000,
+                error=error,
             )
-        return result
+
+        # Arguments can hold sensitive values (a search by name), so the audit log gets a
+        # redacted copy; upstream still receives the original. If we can't redact, fail
+        # closed *before* forwarding anything.
+        logged_args = params.arguments
+        if state.redactor is not None and params.arguments is not None:
+            try:
+                logged_args, _ = state.redactor.redact(params.arguments)
+            except Exception as exc:
+                log(None, is_error=True, error=type(exc).__name__)
+                return _blocked_result()
+
+        # Hook point: cache lookup goes here, before the upstream call.
+        try:
+            result = await state.upstream.call_tool(params.name, params.arguments)
+        except Exception as exc:
+            # Type only: exception messages can embed sensitive values.
+            log(logged_args, is_error=True, error=type(exc).__name__)
+            raise
+
+        raw = result.model_dump_json(by_alias=True, exclude_none=True)
+        if state.redactor is None:
+            # Redaction disabled in config: audit-only mode.
+            log(logged_args, result_redacted=raw, raw=raw, is_error=bool(result.is_error))
+            return result
+
+        try:
+            safe, count = redact_call_result(state.redactor, result)
+        except Exception as exc:
+            # Fail closed: never fall back to the raw result. The hash still records which
+            # data was pulled, without storing it.
+            log(logged_args, raw=raw, is_error=True, error=type(exc).__name__)
+            return _blocked_result()
+
+        log(
+            logged_args,
+            result_redacted=safe.model_dump_json(by_alias=True, exclude_none=True),
+            raw=raw,
+            count=count,
+            is_error=bool(result.is_error),
+        )
+        return safe
 
     return Server(
         name, lifespan=lifespan, on_list_tools=on_list_tools, on_call_tool=on_call_tool
@@ -106,7 +154,11 @@ def build_proxy(
 
 async def _serve(config_path: str) -> None:
     cfg = load_config(config_path)
-    server = build_proxy(cfg.upstream, AuditLog(cfg.audit_db))
+    if not cfg.redaction.enabled:
+        print("mcp-proxy: WARNING: redaction is disabled; results are NOT redacted", file=sys.stderr)
+    server = build_proxy(
+        cfg.upstream, AuditLog(cfg.audit_db), redactor_factory=cfg.redaction.make_redactor
+    )
     # stdout is the protocol channel in stdio mode: never print to it.
     async with stdio_server() as (read, write):
         await server.run(read, write, server.create_initialization_options())
