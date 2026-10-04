@@ -1,7 +1,7 @@
-"""Result cache (phase 3). Default-deny: only allowlisted tools are cached.
+"""Result-cache interface. Not wired into the proxy yet (see the README roadmap).
 
-Cache the *redacted* result, never the raw one.
-Key: (upstream, tool, canonical-JSON(args)). Tests should use an in-memory fake.
+Intended policy: default-deny (only allowlisted tools), and cache the *redacted* result,
+never the raw one.
 """
 
 from __future__ import annotations
@@ -13,6 +13,3 @@ class Cache(Protocol):
     async def get(self, key: str) -> str | None: ...
 
     async def set(self, key: str, value: str, ttl_seconds: int) -> None: ...
-
-
-# TODO: InMemoryCache, RedisCache, make_key(upstream, tool, args)

@@ -71,6 +71,15 @@ def search_travelers(query: str) -> list[dict]:
         if q in t["name"].lower()
     ]
 
+@mcp.tool()
+def search_visas(query: str) -> list[dict]:
+    """Search travelers by visa; returns id and name."""
+    q = query.lower()
+    return [
+        {"traveler_id": t["traveler_id"], "name": t["name"]}
+        for t in TRAVELERS
+        if any(q in v["visa_type"].lower() for v in t["visa_history"])
+    ]
 
 @mcp.tool()
 def get_passport(traveler_id: str) -> dict:

@@ -7,16 +7,34 @@ from typing import Any
 import yaml
 from mcp import StdioServerParameters
 
+from mcp_proxy.redact import FieldRegexRedactor, Redactor
+
 
 class ConfigError(Exception):
     """Raised for a missing, unparseable, or invalid config file."""
 
 
 @dataclass
+class RedactionConfig:
+    """Redaction rules. `enabled=False` is the explicit opt-out (audit-only proxy)."""
+
+    enabled: bool = True
+    fields: dict[str, str] = field(default_factory=dict)  # JSON key -> label
+    patterns: dict[str, str] = field(default_factory=dict)  # label -> regex
+
+    def make_redactor(self) -> Redactor | None:
+        """A fresh redactor. Call once per connection: placeholder numbering and known
+        values are per session, so instances must never be shared across connections."""
+        if not self.enabled:
+            return None
+        return FieldRegexRedactor(self.fields, self.patterns)
+
+
+@dataclass
 class Config:
     upstream: StdioServerParameters
+    redaction: RedactionConfig
     audit_db: Path = field(default_factory=lambda: Path("audit.sqlite"))
-    # TODO: redaction rules, cache allowlist (tool -> ttl), redis_url, store_raw
 
 
 def load_config(path: str | Path) -> Config:
@@ -45,6 +63,7 @@ def load_config(path: str | Path) -> Config:
     base = path.resolve().parent
     return Config(
         upstream=_parse_upstream(raw.get("upstream"), base),
+        redaction=_parse_redaction(raw.get("redaction")),
         audit_db=_resolve(_parse_log(raw.get("log")), base),
     )
 
@@ -92,3 +111,44 @@ def _parse_log(log: Any) -> str:
     if not isinstance(db, str) or not db:
         raise ConfigError("`log.db` must be a non-empty string")
     return db
+
+
+def _str_mapping(value: Any, name: str) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in value.items()
+    ):
+        raise ConfigError(f"`{name}` must be a mapping of strings to strings")
+    return value
+
+
+def _parse_redaction(red: Any) -> RedactionConfig:
+    if red is None:
+        # Required on purpose: silently running unredacted is the worst failure mode here.
+        raise ConfigError(
+            "`redaction` is required (add `fields`/`patterns`, or `redaction: {enabled: false}`"
+            " to log without redacting)"
+        )
+    if not isinstance(red, dict):
+        raise ConfigError("`redaction` must be a mapping")
+    enabled = red.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ConfigError("`redaction.enabled` must be true or false")
+
+    cfg = RedactionConfig(
+        enabled=enabled,
+        fields=_str_mapping(red.get("fields"), "redaction.fields"),
+        patterns=_str_mapping(red.get("patterns"), "redaction.patterns"),
+    )
+    if enabled:
+        if not cfg.fields and not cfg.patterns:
+            raise ConfigError(
+                "`redaction` enabled but has no `fields` or `patterns`, so it would redact"
+                " nothing (use `enabled: false` if that is intended)"
+            )
+        try:
+            FieldRegexRedactor(cfg.fields, cfg.patterns)  # validate labels and regexes now
+        except ValueError as exc:
+            raise ConfigError(f"invalid `redaction` config: {exc}") from exc
+    return cfg

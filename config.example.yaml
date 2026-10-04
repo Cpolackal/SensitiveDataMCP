@@ -1,6 +1,30 @@
-# Copy to config.yaml and adjust.
+# Copy to config.yaml and adjust. Relative paths resolve against this file's directory.
 upstream:
   command: uv
   args: [run, python, fake_passport/server.py]
+
 log:
   db: audit.sqlite
+
+# Required. Use `redaction: {enabled: false}` to log without redacting.
+redaction:
+  # JSON keys whose values are replaced wholesale (case-insensitive) -> placeholder label.
+  # A value seen here is also redacted wherever it appears in free text for the rest of
+  # the session, which catches names and bare digit runs no regex can.
+  fields:
+    ssn: SSN
+    passport_number: PASSPORT
+    email: EMAIL
+    phone: PHONE
+    dob: DOB
+    name: PERSON
+    address: ADDRESS
+    place_of_birth: LOCATION
+    mrz: MRZ
+  # Label -> regex applied to every string. Single-quote these so YAML keeps backslashes.
+  patterns:
+    SSN: '(?<![\w-])\d{3}[- ]\d{2}[- ]\d{4}(?![\w-])'
+    EMAIL: '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
+    PHONE: '(?<![\w.-])(?:\+1[-. ]?|001[-. ])?(?:\(\d{3}\)|\d{3})[-. ]?\d{3}[-. ]\d{4}(?:x\d{1,5})?(?![\w-])'
+    PASSPORT: '(?<![\w-])[A-Z]\d{8}(?![\w-])'
+    MRZ: '(?<![A-Z0-9<])[A-Z0-9<]{44}(?![A-Z0-9<])'

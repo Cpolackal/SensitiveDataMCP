@@ -7,3 +7,5 @@ __pycache__/
 *.sqlite-journal
 config.yaml
 .env
+*.sqlite-shm
+*.sqlite-wal
