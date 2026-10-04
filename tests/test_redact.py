@@ -1,18 +1,10 @@
-"""Phase 2.1: the redaction contract, written before the implementation (TDD).
-
-To implement, add to `src/mcp_proxy/redact.py`:
-
-    class RedactionError(Exception): ...
-
-    class FieldRegexRedactor:
-        def __init__(self, fields: dict[str, str], patterns: dict[str, str]) -> None: ...
-        def redact(self, value: Any) -> tuple[Any, int]: ...
+"""The redaction contract for `FieldRegexRedactor(fields, patterns)`.
 
 `fields` maps a JSON key name to a label ({"ssn": "SSN"}); `patterns` maps a label to a
-regex for free text. One instance == one session: placeholder numbering and known values
-persist across redact() calls on the same instance.
+regex for free text. `redact(value) -> (redacted_value, count)`. One instance is one
+session: placeholder numbering and known values persist across calls on the same instance.
 
-Behavior these tests pin down
+Behavior pinned down here
   * Field pass: the value under a sensitive key (case-insensitive) is replaced entirely
     ("[LABEL_N]"), at any depth. Keys are never changed. None stays None.
   * Regex pass: every match of a label's pattern inside any string is replaced.
@@ -29,8 +21,6 @@ Behavior these tests pin down
 
 Known limitations (deliberately NOT tested as leaks): a bare 9/10-digit number or a name that
 never appeared in a sensitive field cannot be detected, and is left alone.
-
-Until FieldRegexRedactor exists, this whole module is skipped (not failed).
 """
 
 from __future__ import annotations
@@ -42,15 +32,7 @@ import re
 import pytest
 
 from fake_passport.server import TRAVELERS
-from mcp_proxy import redact as redact_module
-
-FieldRegexRedactor = getattr(redact_module, "FieldRegexRedactor", None)
-RedactionError = getattr(redact_module, "RedactionError", None)
-
-pytestmark = pytest.mark.skipif(
-    FieldRegexRedactor is None,
-    reason="not implemented yet: add FieldRegexRedactor to src/mcp_proxy/redact.py",
-)
+from mcp_proxy.redact import FieldRegexRedactor, RedactionError
 
 FIELDS = {
     "ssn": "SSN",
@@ -141,7 +123,6 @@ def test_non_string_value_under_sensitive_key_is_redacted(r, value):
 
 @pytest.mark.parametrize("bad", [b"bytes", {1, 2}, object()])
 def test_unsupported_types_fail_closed(r, bad):
-    assert RedactionError is not None, "define RedactionError in redact.py"
     with pytest.raises(RedactionError):
         r.redact(bad)
     with pytest.raises(RedactionError):

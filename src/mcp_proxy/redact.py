@@ -1,4 +1,4 @@
-"""Redaction of sensitive data in tool results (phase 2).
+"""Redaction of sensitive data in tool results.
 
 Approach (the contract is pinned down in tests/test_redact.py):
   1. Field pass: the value under a sensitive key is replaced wholesale.

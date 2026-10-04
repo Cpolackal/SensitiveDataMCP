@@ -51,23 +51,21 @@ def build_proxy(
 ) -> Server[ProxyState]:
     """Build the proxy Server.
 
-    `upstream_target` is anything `mcp.Client` accepts (StdioServerParameters, or a
-    Server/MCPServer instance for in-process tests). Use `Client(..., cache=None)`:
-    we own caching policy, not the SDK.
+    `upstream_target` is anything `mcp.Client` accepts: a StdioServerParameters, or a
+    Server/MCPServer instance for in-process tests. `tools/list` is forwarded as-is;
+    `tools/call` runs: redact arguments for the log -> upstream call -> redact result ->
+    audit -> return.
 
-    Handlers (low-level Server takes on_* kwargs):
-      on_list_tools -> forward to upstream.list_tools
-      on_call_tool  -> [cache lookup] -> upstream.call_tool -> [redact] -> audit -> return
-    The upstream client is opened in a lifespan so it lives for the whole session.
-    If `audit` is None, calls are forwarded without being logged. `redactor_factory` is
-    called once per connection (never share an instance: placeholders and known values are
-    per session); with None, results are passed through UNREDACTED.
+    `audit=None` skips logging. `redactor_factory` is called once per connection, because
+    placeholders and known values are per session; with None, results pass through
+    UNREDACTED.
     """
 
     @asynccontextmanager
     async def lifespan(_: Server[ProxyState]) -> AsyncIterator[ProxyState]:
         # Runs once per connection: enter = connect upstream, exit = disconnect.
         # The yielded value becomes ctx.lifespan_context in every handler.
+        # cache=None turns off the SDK's own response cache so it can't serve stale results.
         async with Client(upstream_target, cache=None) as upstream:
             session_id = None
             if audit is not None:
@@ -116,7 +114,6 @@ def build_proxy(
                 log(None, is_error=True, error=type(exc).__name__)
                 return _blocked_result()
 
-        # Hook point: cache lookup goes here, before the upstream call.
         try:
             result = await state.upstream.call_tool(params.name, params.arguments)
         except Exception as exc:

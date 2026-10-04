@@ -35,7 +35,6 @@ class Config:
     upstream: StdioServerParameters
     redaction: RedactionConfig
     audit_db: Path = field(default_factory=lambda: Path("audit.sqlite"))
-    # TODO: cache allowlist (tool -> ttl), redis_url, store_raw
 
 
 def load_config(path: str | Path) -> Config:
