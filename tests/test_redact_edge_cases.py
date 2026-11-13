@@ -5,7 +5,6 @@ Three groups:
   * Known gaps, marked `xfail(strict=True)`. Each one documents something the redactor
     misses today. Strict means the suite fails as soon as a fix lands, so the marker has to
     be removed and the test then guards the fix.
-      - STRUCTURAL: the engine's own logic misses data it could catch.
       - INTEGRITY: nothing leaks, but placeholders mislead the model about identity.
       - LIMITATION: needs normalization or NER beyond field/regex/known-value matching.
 """
@@ -41,10 +40,6 @@ def seeded(r):
 
 def dump(value) -> str:
     return json.dumps(value, ensure_ascii=False)
-
-
-def structural(reason: str):
-    return pytest.mark.xfail(strict=True, reason=f"STRUCTURAL: {reason}")
 
 
 def integrity(reason: str):
@@ -226,14 +221,39 @@ def test_nested_json_redaction_is_idempotent(r):
     assert r.redact(once) == (once, 0)
 
 
-# ------------------------------------------------------------------- STRUCTURAL gaps
 
 
-@structural("a partially overlapping later match is dropped, leaving its tail visible")
+
 def test_partially_overlapping_matches_leave_no_tail():
     r = FieldRegexRedactor({}, {"AAA": r"ID-\d{4}", "BBB": r"\d{2}-SECRET-\d{6}"})
-    out, _ = r.redact("x ID-1234-SECRET-999999 y")
-    assert "SECRET" not in out and "999999" not in out
+    assert r.redact("x ID-1234-SECRET-999999 y") == ("x [AAA_1] y", 1)
+
+
+def test_a_chain_of_overlaps_merges_into_one_placeholder():
+    r = FieldRegexRedactor({}, {"A": r"a1b", "B": r"1b2c", "C": r"2c3d"})
+    assert r.redact("_a1b2c3d_") == ("_[A_1]_", 1)
+
+
+def test_a_span_contained_in_another_does_not_change_its_placeholder():
+    # The SSN regex also matches inside the known value; the known value's own placeholder
+    # (shared with its field) wins, untouched by the merge.
+    r = FieldRegexRedactor({"ref": "REF"}, {"SSN": r"\d{3}-\d{2}-\d{4}"})
+    out, _ = r.redact({"ref": "case 242-47-3361 open", "note": "see case 242-47-3361 open"})
+    assert out == {"ref": "[REF_1]", "note": "see [REF_1]"}
+
+
+def test_adjacent_matches_stay_separate():
+    r = FieldRegexRedactor({}, {"A": r"aaaa", "B": r"bbbb"})
+    assert r.redact("aaaabbbb") == ("[A_1][B_1]", 2)
+
+
+def test_merged_text_is_one_entity_across_calls():
+    r = FieldRegexRedactor({}, {"AAA": r"ID-\d{4}", "BBB": r"\d{2}-SECRET-\d{6}"})
+    r.redact("ID-1234-SECRET-999999")
+    assert r.redact("again ID-1234-SECRET-999999, and ID-1234") == (
+        "again [AAA_1], and [AAA_2]",
+        2,
+    )
 
 
 # -------------------------------------------------------------------- INTEGRITY gaps

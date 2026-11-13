@@ -239,20 +239,26 @@ class FieldRegexRedactor:
             return text
 
         spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))  # stable: leftmost, then longest
-        chosen: list[tuple[int, int, str]] = []
-        last_end = 0
+        # Merge overlapping spans rather than dropping the later one: dropping it would leave
+        # the part that sticks out past the earlier span in plain text. The merged span keeps
+        # the leftmost-longest span's label; a span that merged nothing keeps its own match,
+        # so its placeholder is shared with other mentions of the same value.
+        merged: list[list] = []  # [start, end, label, matched or None once merged]
         for start, end, label, matched in spans:
-            if start >= last_end:  # drop spans overlapping an earlier choice
-                # Mint placeholders left to right so numbering is first-seen order.
-                chosen.append((start, end, self._placeholder(label, matched)))
-                last_end = end
+            if merged and start < merged[-1][1]:
+                if end > merged[-1][1]:
+                    merged[-1][1] = end
+                    merged[-1][3] = None
+            else:
+                merged.append([start, end, label, matched])
 
         pieces: list[str] = []
         cursor = 0
-        for start, end, placeholder in chosen:
+        for start, end, label, matched in merged:
             pieces.append(text[cursor:start])
-            pieces.append(placeholder)
+            # Minted left to right so numbering is first-seen order.
+            pieces.append(self._placeholder(label, matched or text[start:end]))
             cursor = end
         pieces.append(text[cursor:])
-        run.count += len(chosen)
+        run.count += len(merged)
         return "".join(pieces)
