@@ -9,6 +9,8 @@ Approach (the contract is pinned down in tests/test_redact.py):
      that no regex can).
   4. Placeholders ([PERSON_1], [SSN_2]) are stable per instance, so the model can still
      tell that two mentions are the same entity. One instance == one session.
+  5. A string that is itself a JSON object or array (a stringified payload) is parsed and
+     handled as a structure, at any depth, so passes 1-3 apply inside it too.
 Fails closed: anything that is not JSON-like raises RedactionError, so the proxy returns an
 error instead of the raw result. The rule set is pluggable: any object with a matching
 `redact` method (e.g. a Presidio-backed one) can replace FieldRegexRedactor.
@@ -16,6 +18,7 @@ error instead of the raw result. The rule set is pluggable: any object with a ma
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -26,6 +29,19 @@ MIN_KNOWN_VALUE_LEN = 4
 
 _LABEL = re.compile(r"[A-Z]+")
 _PLACEHOLDER = re.compile(r"\[[A-Z]+_\d+\]")
+
+
+def _as_json_container(text: str) -> dict | list | None:
+    """The parsed value if `text` is a JSON object or array, else None. Cheap check first:
+    most strings are prose, and json.loads on them is wasted work."""
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "{[":
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, (dict, list)) else None
 
 
 class Redactor(Protocol):
@@ -102,6 +118,11 @@ class FieldRegexRedactor:
         elif isinstance(node, list):
             for i, child in enumerate(node):
                 self._learn(child, label, f"{path}[{i}]")
+        elif label is None and isinstance(node, str):
+            # A stringified payload can hold sensitive keys of its own.
+            parsed = _as_json_container(node)
+            if parsed is not None:
+                self._learn(parsed, None, f"{path}<json>")
         elif label is not None:
             if isinstance(node, int) and not isinstance(node, bool):
                 node = str(node)
@@ -150,7 +171,7 @@ class FieldRegexRedactor:
         if isinstance(node, list):
             return [self._walk(child, run, f"{path}[{i}]") for i, child in enumerate(node)]
         if isinstance(node, str):
-            return self._text(node, run)
+            return self._string(node, run, path)
         if isinstance(node, int) and not isinstance(node, bool):
             return self._int(node, run)
         if node is None or isinstance(node, (float, bool)):
@@ -175,6 +196,20 @@ class FieldRegexRedactor:
             run.count += 1
             return self._placeholder(label, str(node))
         raise RedactionError(f"unsupported type {type(node).__name__} at {path}")
+
+    def _string(self, text: str, run: _Run, path: str) -> str:
+        """A JSON object/array string is walked as a structure and re-serialized; anything
+        else gets the free-text pass. An untouched payload is returned byte-for-byte, so
+        redaction never reformats data it didn't change."""
+        parsed = _as_json_container(text)
+        if parsed is None:
+            return self._text(text, run)
+        inner = _Run()
+        redacted = self._walk(parsed, inner, f"{path}<json>")
+        if inner.count == 0:
+            return text
+        run.count += inner.count
+        return json.dumps(redacted, ensure_ascii=False)
 
     def _int(self, value: int, run: _Run) -> int | str:
         """An int outside a sensitive field that equals a known value (a passport number

@@ -181,15 +181,52 @@ def test_bools_and_floats_are_never_treated_as_known_ints(r):
     assert r.redact({"a": True, "b": 1111.0}) == ({"a": True, "b": 1111.0}, 0)
 
 
-# ------------------------------------------------------------------- STRUCTURAL gaps
+# ------------------------------------------------------------- JSON nested in strings
 
 
-@structural("JSON inside a string is free text, so field rules and learning don't apply")
 def test_json_string_nested_in_a_field_gets_field_rules(r):
     payload = json.dumps({"ssn": "242473361", "name": "Gregory Moore"})
-    out, _ = r.redact({"payload": payload})
-    assert "242473361" not in out["payload"]
-    assert "Gregory Moore" not in out["payload"]
+    out, n = r.redact({"payload": payload})
+    assert json.loads(out["payload"]) == {"ssn": "[SSN_1]", "name": "[PERSON_1]"}
+    assert n == 2
+
+
+def test_values_learned_inside_nested_json_cover_text_outside_it(r):
+    # The note comes first, so this also checks learning happens before walking.
+    record = {"note": "Gregory Moore called", "raw": json.dumps({"name": "Gregory Moore"})}
+    out, _ = r.redact(record)
+    assert out["note"] == "[PERSON_1] called"
+    assert json.loads(out["raw"]) == {"name": "[PERSON_1]"}
+
+
+def test_doubly_encoded_json_is_redacted(r):
+    inner = json.dumps({"ssn": "242473361"})
+    out, _ = r.redact({"envelope": json.dumps({"body": inner})})
+    body = json.loads(json.loads(out["envelope"])["body"])
+    assert body == {"ssn": "[SSN_1]"}
+
+
+def test_json_array_string_is_parsed(r):
+    out, _ = r.redact(json.dumps([{"email": "janetclay@example.net"}, "plain"]))
+    assert json.loads(out) == [{"email": "[EMAIL_1]"}, "plain"]
+
+
+def test_nested_json_with_nothing_to_redact_is_returned_byte_for_byte(r):
+    payload = '{"status":"ok",  "count": 3}'
+    assert r.redact({"payload": payload}) == ({"payload": payload}, 0)
+
+
+@pytest.mark.parametrize("text", ['{"broken": ', "[not json", "{} trailing", '"just a string"', "42"])
+def test_non_container_or_invalid_json_gets_the_free_text_pass(r, text):
+    assert r.redact(f"{text} 242-47-3361") == (f"{text} [SSN_1]", 1)
+
+
+def test_nested_json_redaction_is_idempotent(r):
+    once, _ = r.redact({"payload": json.dumps({"ssn": "242473361"})})
+    assert r.redact(once) == (once, 0)
+
+
+# ------------------------------------------------------------------- STRUCTURAL gaps
 
 
 @structural("a partially overlapping later match is dropped, leaving its tail visible")
