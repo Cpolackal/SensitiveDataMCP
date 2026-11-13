@@ -188,7 +188,6 @@ async def test_tool_descriptions_are_redacted(example_redaction, audit):
 # ---------------------------------------------------------------- results
 
 
-@pytest.mark.xfail(strict=True, reason="STRUCTURAL: dict keys are never redacted")
 async def test_pii_used_as_a_result_key_does_not_reach_the_model(example_redaction, audit):
     upstream = MCPServer("index")
 
@@ -199,6 +198,23 @@ async def test_pii_used_as_a_result_key_does_not_reach_the_model(example_redacti
     async with Client(proxy(upstream, example_redaction, audit)) as client:
         res = await client.call_tool("visits_by_email", {})
     assert "janetclay@example.net" not in res.model_dump_json()
+    assert json.loads(res.content[0].text) == {"[EMAIL_1]": 3}
+    assert "janetclay@example.net" not in audit.query_calls()[0]["result_redacted"]
+
+
+async def test_colliding_result_keys_are_blocked(example_redaction, audit):
+    from mcp_proxy.server import BLOCKED_TEXT
+
+    upstream = MCPServer("index")
+
+    @upstream.tool()
+    def visits_by_email() -> dict:
+        return {"janetclay@example.net": 3, "JANETCLAY@example.net": 4}
+
+    async with Client(proxy(upstream, example_redaction, audit)) as client:
+        res = await client.call_tool("visits_by_email", {})
+    assert res.is_error and res.content[0].text == BLOCKED_TEXT
+    assert audit.query_calls()[0]["error"] == "RedactionError"
 
 
 async def test_concurrent_calls_on_one_connection_share_placeholders(example_redaction, audit):

@@ -2,7 +2,8 @@
 
 Approach (the contract is pinned down in tests/test_redact.py):
   1. Field pass: the value under a sensitive key is replaced wholesale.
-  2. Regex pass: pattern matches inside any string are replaced.
+  2. Regex pass: pattern matches inside any string are replaced, dict keys included (APIs
+     key maps by email or name). Keys that would collide once redacted fail closed.
   3. Known-value propagation: a string seen under a sensitive key is remembered and also
      replaced wherever it appears in free text (this catches names and bare digit runs
      that no regex can).
@@ -122,13 +123,25 @@ class FieldRegexRedactor:
 
     # -------------------------------------------------------------------- walking
 
+    def _key(self, out: dict, key: Any, run: _Run, path: str) -> Any:
+        """Redacted copy of a dict key, for storing into `out`. Keys get the free-text pass,
+        since APIs key maps by email, name or id. Two keys that redact to the same text (one
+        email in two cases) would silently drop a value, so that fails closed instead.
+        Called before the value is walked, so placeholder numbering stays first-seen."""
+        safe_key = self._text(key, run) if isinstance(key, str) else key
+        if safe_key in out:
+            raise RedactionError(f"redacted keys collide at {path}")
+        return safe_key
+
     def _walk(self, node: Any, run: _Run, path: str) -> Any:
         if isinstance(node, dict):
-            out = {}
+            out: dict = {}
             for key, child in node.items():
+                # The field rule matches the original key, before the key itself is redacted.
                 label = self._fields.get(key.lower()) if isinstance(key, str) else None
                 child_path = f"{path}.{key}"
-                out[key] = (
+                safe_key = self._key(out, key, run, path)
+                out[safe_key] = (
                     self._field(child, label, run, child_path)
                     if label
                     else self._walk(child, run, child_path)
@@ -147,7 +160,11 @@ class FieldRegexRedactor:
         if node is None:
             return None
         if isinstance(node, dict):
-            return {k: self._field(v, label, run, f"{path}.{k}") for k, v in node.items()}
+            out: dict = {}
+            for k, v in node.items():
+                safe_key = self._key(out, k, run, path)
+                out[safe_key] = self._field(v, label, run, f"{path}.{k}")
+            return out
         if isinstance(node, list):
             return [self._field(v, label, run, f"{path}[{i}]") for i, v in enumerate(node)]
         if isinstance(node, str) and _PLACEHOLDER.fullmatch(node):

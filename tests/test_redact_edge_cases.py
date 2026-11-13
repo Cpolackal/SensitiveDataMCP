@@ -16,7 +16,7 @@ import json
 
 import pytest
 
-from mcp_proxy.redact import FieldRegexRedactor
+from mcp_proxy.redact import FieldRegexRedactor, RedactionError
 
 SEED = {
     "name": "Gregory Moore",
@@ -114,22 +114,50 @@ def test_no_seed_value_survives_a_mixed_record(r):
         assert raw not in seen
 
 
-# ------------------------------------------------------------------- STRUCTURAL gaps
+# --------------------------------------------------------------------------- dict keys
 
 
-@structural("dict keys are never redacted, so regex-detectable PII in a key passes through")
 def test_regex_pii_used_as_a_dict_key_is_redacted(r):
-    out, _ = r.redact({"by_email": {"janetclay@example.net": {"visits": 3}},
+    out, n = r.redact({"by_email": {"janetclay@example.net": {"visits": 3}},
                        "by_ssn": {"242-47-3361": "ok"}})  # fmt: skip
-    seen = dump(out)
-    assert "janetclay@example.net" not in seen
-    assert "242-47-3361" not in seen
+    assert out == {"by_email": {"[EMAIL_1]": {"visits": 3}}, "by_ssn": {"[SSN_1]": "ok"}}
+    assert n == 2
 
 
-@structural("dict keys are never checked against known values")
 def test_known_name_used_as_a_dict_key_is_redacted(seeded):
-    out, _ = seeded.redact({"Gregory Moore": {"visits": 3}})
-    assert "Gregory Moore" not in dump(out)
+    out, n = seeded.redact({"Gregory Moore": {"visits": 3}})
+    assert (out, n) == ({"[PERSON_1]": {"visits": 3}}, 1)
+
+
+def test_key_and_value_mentions_of_one_entity_share_a_placeholder(r):
+    out, _ = r.redact({"name": "Gregory Moore", "visits": {"Gregory Moore": 3}})
+    assert out == {"name": "[PERSON_1]", "visits": {"[PERSON_1]": 3}}
+
+
+def test_field_rule_matches_the_original_key_and_key_is_redacted_first(r):
+    # The key is minted before its value is walked, so numbering is first-seen.
+    out, _ = r.redact({"a@example.com": {"email": "b@example.com"}})
+    assert out == {"[EMAIL_1]": {"email": "[EMAIL_2]"}}
+
+
+def test_pii_keys_under_a_sensitive_field_are_redacted_too(r):
+    out, _ = r.redact({"phone": {"janetclay@example.net": "878-374-4126"}})
+    assert out == {"phone": {"[EMAIL_1]": "[PHONE_1]"}}
+
+
+def test_keys_that_redact_to_the_same_text_fail_closed(r):
+    # One email in two cases is one entity, so both keys become [EMAIL_1]; keeping only one
+    # value would silently drop data.
+    with pytest.raises(RedactionError, match="collide"):
+        r.redact({"janetclay@example.net": 1, "JanetClay@example.net": 2})
+
+
+def test_redacting_keys_is_idempotent(r):
+    once, _ = r.redact({"janetclay@example.net": {"242-47-3361": 1}})
+    assert r.redact(once) == (once, 0)
+
+
+# ------------------------------------------------------------------- STRUCTURAL gaps
 
 
 @structural("only strings are checked against known values; ints elsewhere pass through")
