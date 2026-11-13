@@ -6,7 +6,8 @@ session: placeholder numbering and known values persist across calls on the same
 
 Behavior pinned down here
   * Field pass: the value under a sensitive key (case-insensitive) is replaced entirely
-    ("[LABEL_N]"), at any depth. Keys are never changed. None stays None.
+    ("[LABEL_N]"), at any depth. None stays None. Keys get the free-text pass (regex and
+    known values) but are otherwise unchanged; see tests/test_redact_edge_cases.py.
   * Regex pass: every match of a label's pattern inside any string is replaced.
   * Known-value propagation: a string seen under a sensitive key is remembered and is
     replaced everywhere it appears in free text (case-insensitive, whole-token), in any

@@ -12,7 +12,7 @@ from typing import Any
 
 import anyio
 import mcp_types as types
-from mcp import Client
+from mcp import Client, MCPError
 from mcp.server import Server, ServerRequestContext
 from mcp.server.stdio import stdio_server
 
@@ -40,6 +40,19 @@ def _blocked_result() -> types.CallToolResult:
     return types.CallToolResult(
         content=[types.TextContent(type="text", text=BLOCKED_TEXT)], is_error=True
     )
+
+
+WITHHELD_ERROR_TEXT = "Upstream error withheld by the sensitive-data proxy."
+
+
+def _redacted_upstream_error(redactor: Redactor, exc: MCPError) -> MCPError:
+    """Copy of an upstream JSON-RPC error with its message and data redacted. Keeps the
+    code. Fails closed: if either part can't be redacted, both are withheld."""
+    try:
+        safe, _ = redactor.redact({"message": exc.message, "data": exc.data})
+    except Exception:
+        return MCPError(code=exc.code, message=WITHHELD_ERROR_TEXT)
+    return MCPError(code=exc.code, message=safe["message"], data=safe["data"])
 
 
 def build_proxy(
@@ -119,6 +132,11 @@ def build_proxy(
         except Exception as exc:
             # Type only: exception messages can embed sensitive values.
             log(logged_args, is_error=True, error=type(exc).__name__)
+            if isinstance(exc, MCPError) and state.redactor is not None:
+                # A JSON-RPC error from upstream is relayed to the model verbatim, so its
+                # message and data need the same treatment as a result.
+                raise _redacted_upstream_error(state.redactor, exc) from None
+            # Anything else becomes a generic "Internal server error" in the SDK.
             raise
 
         raw = result.model_dump_json(by_alias=True, exclude_none=True)
