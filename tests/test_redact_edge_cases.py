@@ -157,13 +157,31 @@ def test_redacting_keys_is_idempotent(r):
     assert r.redact(once) == (once, 0)
 
 
-# ------------------------------------------------------------------- STRUCTURAL gaps
+# ------------------------------------------------------------------ ints as known values
 
 
-@structural("only strings are checked against known values; ints elsewhere pass through")
 def test_known_value_appearing_as_an_int_elsewhere_is_redacted(seeded):
-    out, _ = seeded.redact({"ref": 575977079})
-    assert out["ref"] != 575977079
+    out, n = seeded.redact({"ref": 575977079, "refs": [1, 575977079]})
+    assert out == {"ref": "[PASSPORT_1]", "refs": [1, "[PASSPORT_1]"]}
+    assert n == 2
+
+
+def test_int_learned_in_the_same_record_is_redacted_elsewhere(r):
+    out, _ = r.redact({"passport_number": 575977079, "booking": {"doc": 575977079}})
+    assert out == {"passport_number": "[PASSPORT_1]", "booking": {"doc": "[PASSPORT_1]"}}
+
+
+@pytest.mark.parametrize("value", [1, 2024, 5759770790, -575977079, 0])
+def test_ints_that_are_not_exactly_a_known_value_pass_through(seeded, value):
+    assert seeded.redact({"n": value}) == ({"n": value}, 0)
+
+
+def test_bools_and_floats_are_never_treated_as_known_ints(r):
+    r.redact({"passport_number": "1111", "ssn": 1})  # "1" is too short to be learned anyway
+    assert r.redact({"a": True, "b": 1111.0}) == ({"a": True, "b": 1111.0}, 0)
+
+
+# ------------------------------------------------------------------- STRUCTURAL gaps
 
 
 @structural("JSON inside a string is free text, so field rules and learning don't apply")

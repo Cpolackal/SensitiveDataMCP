@@ -151,7 +151,9 @@ class FieldRegexRedactor:
             return [self._walk(child, run, f"{path}[{i}]") for i, child in enumerate(node)]
         if isinstance(node, str):
             return self._text(node, run)
-        if node is None or isinstance(node, (int, float, bool)):
+        if isinstance(node, int) and not isinstance(node, bool):
+            return self._int(node, run)
+        if node is None or isinstance(node, (float, bool)):
             return node
         raise RedactionError(f"unsupported type {type(node).__name__} at {path}")
 
@@ -173,6 +175,17 @@ class FieldRegexRedactor:
             run.count += 1
             return self._placeholder(label, str(node))
         raise RedactionError(f"unsupported type {type(node).__name__} at {path}")
+
+    def _int(self, value: int, run: _Run) -> int | str:
+        """An int outside a sensitive field that equals a known value (a passport number
+        stored as a number elsewhere) becomes its placeholder; the type changes, which is
+        the safe direction. Whole-value match only: digits inside a larger int are not
+        matched, and regex patterns are not applied (they all need separators)."""
+        known = self._known.get(str(value))
+        if known is None:
+            return value
+        run.count += 1
+        return self._placeholder(known[0], known[1])
 
     def _text(self, text: str, run: _Run) -> str:
         # (start, end, label, matched). Known values are listed first so that, on an
